@@ -41,9 +41,23 @@
             "homepage": "http://hiqdev.com/"
         }
     ],
+    "require": {
+        "hiqdev/hiapi-legacy": "*"
+    },
     "require-dev": {
         "hiqdev/hidev-php": "dev-master",
-        "hiqdev/hidev-hiqdev": "dev-master"
+        "hiqdev/hidev-hiqdev": "dev-master",
+        "phpunit/phpunit": "^6.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "hiapi\\hostmaster\\": "src"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "hiapi\\hostmaster\\tests\\": "tests"
+        }
     },
     "extra": {
         "config-plugin": {
