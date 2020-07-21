@@ -72,7 +72,6 @@ class EppClient {
     {
         $this->tool = $tool;
         $this->log_file     = $config['log_file'] ?? yii::getAlias("@runtime/var/{$config['log_dir']}/{$config['registrator']}.log");
-        var_dump($this->log_file);
         $this->login        = $config['login'];
         $this->password     = $config['password'];
         $this->url          = "{$config['protocol']}://{$config['url']}:{$config['port']}";
@@ -242,8 +241,6 @@ class EppClient {
         try {
             $this->xml_data = ParserFactory::parse($object, $this->answer);
         } catch (\Throwable $e) {
-            var_dump($e->getMessage());
-            var_dump($e->getTraceAsString());
             throw new \Exception($e->getMessage());
         }
 
