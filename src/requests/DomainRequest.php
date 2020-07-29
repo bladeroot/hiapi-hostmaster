@@ -11,15 +11,17 @@
 
 namespace hiapi\hostmaster\requests;
 
-class DomainRequest extends AbstractRequest
+use DOMElement;
+
+class DomainRequest extends AbstractObjectRequest
 {
     /** @var string $object */
     protected $object = 'domain';
 
     public function create(array $data) : self
     {
-        $this->init()->command('create', [], $data['extensions']);
-        $command = $this->appendElement($this->command, 'domain:create', null, $this->namespaces['domain']);
+        $this->command('create');
+        $command = $this->appendElement($this->command, 'domain:create', null, ["xmlns:domain" => $this->repository->get('domain')]);
 
         $this->appendElement($command, 'domain:name', $data['domain']);
         $this->appendElement($command, 'domain:period', $data['period'] ?? 1, ['unit' => $data['unit'] ?? 'y']);
@@ -51,38 +53,35 @@ class DomainRequest extends AbstractRequest
             }
         }
 
-        $this->addExtensions($data['extensions']);
-
         return $this;
     }
 
     public function renew(array $data)
     {
-        $this->init()->command('renew', [], $data['extensions']);
+        $this->init()->command('renew');
 
-        $command = $this->appendElement($this->command, 'domain:renew', null, $this->namespaces['domain']);
+        $command = $this->appendElement($this->command, 'domain:renew', null, ["xmlns:domain" => $this->repository->get('domain')]);
         $this->appendElement($command, 'domain:name', $data['domain']);
         $this->appendElement($command, 'domain:curExpDate', $data['expires']);
         $this->appendElement($command, 'domain:period', $data['period']);
-
-        $this->addExtensions($data['extensions']);
 
         return $this;
     }
 
     public function update(array $data)
     {
-        $this->init()->command('update', [], $data['extensions']);
-        $command = $this->appendElement($this->command, 'domain:update', null, $this->namespaces['domain']);
+        $this->command('update', [], $data['extensions']);
+        $command = $this->appendElement($this->command, 'domain:update', null, ["xmlns:domain" => $this->repository->get('domain')]);
 
         $this->appendElement($command, 'domain:name', $data['domain']);
 
         foreach (['add', 'rem', 'chg'] as $part) {
             foreach (['host','contacts','status', 'password'] as $v) {
-                if (is_null($data[$part][$v]) || empty($data[$part][$v])) {
+                if (empty($data[$part][$v])) {
                     unset($data[$part][$v]);
                 }
             }
+
             if (empty($data[$part])) {
                 unset($data[$part]);
             }
@@ -104,18 +103,14 @@ class DomainRequest extends AbstractRequest
 
         $this->addChange($command, $data['chg']);
 
-        $this->addExtensions($data['extensions']);
-
         return $this;
     }
 
     public function restore(array $data)
     {
-        $this->init()->command('update', [], $data['extensions']);
-        $command = $this->appendElement($this->command, 'domain:update', null, $this->namespaces['domain']);
+        $this->command('update');
+        $command = $this->appendElement($this->command, 'domain:update', null, ["xmlns:domain" => $this->repository->get('domain')]);
         $this->appendElement($command, 'domain:name', $data['domain']);
-
-        $this->addExtensions($data['extensions']);
 
         return $this;
     }
@@ -160,7 +155,7 @@ class DomainRequest extends AbstractRequest
         return $this;
     }
 
-    protected function addChange(DOMElement $command, array $data = [])
+    protected function addChange(DOMElement $command, array $data = null)
     {
         if (empty($data)) {
             return $this;

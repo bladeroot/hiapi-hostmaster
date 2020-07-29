@@ -13,400 +13,269 @@
 namespace hiapi\hostmaster;
 
 use hiapi\hostmaster\helpers\XmlHelper;
-use hiapi\hostmaster\requests\AbstractRequest;
-use hiapi\hostmaster\requests\DomainRequest;
-use hiapi\hostmaster\requests\EppRequest;
-use hiapi\hostmaster\requests\HostRequest;
-use hiapi\hostmaster\requests\ContactRequest;
 use hiapi\hostmaster\parsers\ParserFactory;
-use hiqdev\yii\compat\yii;
 
+use hiapi\hostmaster\requests\RequestInterface;
+use hiapi\hostmaster\generator\BasicGenerator;
+use hiapi\hostmaster\response\epp\EppHelloResponse;
+use hiapi\hostmaster\exceptions\ConnectionException;
+
+use RuntimeException;
 
 /*
  * EPP Client
  */
-class EppClient {
-    /** Debug mode */
-    const DEBUG_NONE = 1;
-    const DEBUG_LOW = 2;
-    const DEBUG_HIGH = 3;
-    const DEBUG_FULL = 4;
-    const DEBUG_TRACE = 5;
-    const DEBUG_ALL = 6;
+class EppClient
+{
+    /** @var HostmasterTool */
+    private $tool;
 
-    /** Log mode */
-    const MODE_INFO = 0;
-    const MODE_CLIENT = 1;
-    const MODE_SERVER = 2;
+    /** @var StreamSocketConnection */
+    private $connection;
 
-    /** @var array of EppClient $instances */
-    private static $instances = [];
+    /** @var bool */
+    private $isLoggedIn;
 
-    /** @var resource $socket */
-    protected $socket;
-    /** @var string $url */
-    protected $url;
-    /** @var bool $is_connected */
-    protected $is_connected = false;
-    /** @var bool $is_loggedin */
-    protected $is_loggedin = false;
-    /** @var string $request */
-    protected $request;
-    /** @var string $answer */
-    protected $answer;
-    /** @var string $greeting */
-    protected $greeting;
-    /** @var string $log_file */
-    protected $log_file;
+    private $objRepo;
 
-    protected $config = [];
+    private $extRepo;
 
-    protected $requestMap = [
-        'epp' => EppRequest::class,
-        'domain' => DomainRequest::class,
-        'contact' => ContactRequest::class,
-        'host' => HostRequest::class,
-    ];
+    protected $version;
 
-    private function __construct(HostmasterTool $tool, array $config)
+    protected $language = 'en';
+
+    /** @var NamespaceCollection */
+    private $namespaceCollection;
+
+    /** @var NamespaceCollection */
+    private $extNamespaceCollection;
+
+    /** @var GeneratorInterface */
+    private $idGenerator;
+
+    /** @var ExtensionInterface[] */
+    private $extensionStack;
+
+    private $greeting;
+
+    private static $instance;
+
+    public static function getClient(HostmasterTool $tool, StreamSocketConnection $connection) : self
+    {
+        if (empty(self::$instance)) {
+            self::$instance = new static($tool, $connection);
+        }
+
+        return self::$instance;
+    }
+
+    public function getExtensions()
+    {
+        return $this->extRepo->getAll();
+    }
+
+    public function isLoggedIn()
+    {
+        return $this->isLoggedIn;
+    }
+
+    public function __destruct()
+    {
+        if (!$this->isLoggedIn()) {
+            return ;
+        }
+
+        $this->send(["command" => "epp:logout"]);
+        $this->isLoggedIn = false;
+        $this->connection->disconnect();
+
+    }
+
+    private function __construct(HostmasterTool $tool, StreamSocketConnection $connection)
     {
         $this->tool = $tool;
-        $this->log_file     = $config['log_file'] ?? yii::getAlias("@runtime/var/{$config['log_dir']}/{$config['registrator']}.log");
-        $this->login        = $config['login'];
-        $this->password     = $config['password'];
-        $this->url          = "{$config['protocol']}://{$config['url']}:{$config['port']}";
-        $this->certificate  = $config['certificate'];
-        $this->timeout      = $config['timeout'] ?? 300;
-        $this->is_loggedin  = false;
-        $this->is_connected = false;
-        $this->config = $config;
-    }
-
-    /**
-     * Get instance
-     *
-     * @param array $config
-     * @return self
-     */
-    public static function init(HostmasterTool $tool, array $config) : self
-    {
-        $key = $config['registy'] . "_" . $config['registrator'];
-        if (empty(self::$instances[$key])) {
-            self::$instances[$key] = new static($tool, $config);
-        }
-
-
-        return self::$instances[$key];
-    }
-
-    public function getTool() : HostmasterTool
-    {
-        if (empty($this->tool)) {
-        }
-
-        return $this->tool;
-    }
-
-    /**
-     * return bool
-     */
-    public function isConnected() : bool
-    {
-        return (bool) ($this->is_connected && $this->socket);
-    }
-
-    /**
-     * return bool
-     */
-    public function isLoggedIn() : bool
-    {
-        return (bool) ($this->is_connected && $this->is_loggedin && $this->socket);
-    }
-
-   private function context()
-    {
-        if ($this->certificate) {
-            $options = [
-                'ssl' => [
-                    'local_cert'        => $this->certificate,
-                    'verify_peer'       => false,
-                    'verify_peer_name'  => false,
-                ],
-            ];
-            if ($this->cacertfile) {
-                $options['ssl'] = array_merge($options['ssl'], [
-                    'verify_peer' => true,
-                    'cafile' => $this->cacertfile,
-                ]);
-            }
-        }
-
-        if ($this->bindto) {
-            $options['socket'] = ['bindto' => $this->bindto];
-        }
-
-        return isset($options) ? stream_context_create($options) : null;
-    }
-
-    /**
-     * Create connection to EPP server
-     *
-     * @return self
-     * @throw RuntimeException
-     */
-    public function connect()
-    {
-        if ($this->isConnected()) {
-            return $this;
-        }
-        $errno  = "";
-        $errstr = "";
-        $target = $this->url;
-        $context = $this->context();
-        if ($context === null) {
-            $this->socket = @stream_socket_client($target, $errno, $errstr, $this->timeout);
-        } else {
-            $this->socket = @stream_socket_client($target, $errno, $errstr, $this->timeout, STREAM_CLIENT_CONNECT, $context);
-        }
-
-        if ($this->socket === false || $this->socket === null) {
-            throw new \RuntimeException("Error connecting to $target: $errno - $errstr cert: $this->certificate");
-        }
-
-        if ($this->getFrame() === false) {
-            throw new \RuntimeException("Could not get frame from EPP Server");
-        }
-
-        $this->is_connected = true;
-        $this->greeting = ParserFactory::parse('epp', $this->answer);
-
-        $this->slog($this->answer, self::MODE_SERVER);
-        return $this;
-    }
-
-    /**
-     * Close connection to EPP server
-     */
-    public function disconnect()
-    {
-        if ($this->is_connected && ($this->socket !== false)) {
-            $this->logout();
-            stream_socket_shutdown($this->socket, STREAM_SHUT_RDWR);
-            fclose($this->socket);
-            unset($this->socket);
-        }
-        $this->is_connected = false;
-
-        return false;
-    }
-
-    /**
-     * Execute command
-     *
-     * @param string $cml
-     * @return string
-     * @throw RuntimeException
-     */
-    public function command(string $object, string $command, array $data = [])
-    {
-        if (!$this->isLoggedIn() && $object !== 'epp' && !in_array($command, ['hello', 'login', 'logout'], true)) {
-            $this->login();
-        }
-
-        $request = $this->getRequestObj($object);
-        $xmlObj = call_user_func([$request, $command], $data);
-        $xml = (string) $xmlObj;
-
-        $this->slog($xml, self::MODE_CLIENT);
-        $this->request = trim(preg_replace(['/^[\s]*/uim', '/[\s]*$/uim'], ['', ''],trim($xml)));
-
-        if (strlen($this->request) > 4092) {
-            throw new \RuntimeException("Request is too long");
-        }
-
-        if (XmlHelper::isXMLContentValid($this->request) === false) {
-            throw new \RuntimeException("XML is not valid");
-        }
-
-        // --- send request ---
-        $this->sendFrame();
-
-        // --- recv answer ---
-        if ($this->getFrame() === false) {
-            throw new \RuntimeException("Could not get answer from EPP");
-        }
-
-        $this->slog($this->answer, self::MODE_SERVER);
+        $this->connection = $connection;
+        $this->greeting = ParserFactory::parse('epp', $this->connection->getGreeting());
+        $svcMenu = $this->greeting['greeting']['svcMenu'];
 
         try {
-            $this->xml_data = ParserFactory::parse($object, $this->answer);
+            $this->objRepo = new XMLNSRepository($svcMenu['objURI']);
+            $this->extRepo = new XMLNSExtensionsRepository($svcMenu['svcExtension']['extURI']);
         } catch (\Throwable $e) {
-            throw new \Exception($e->getMessage());
+            throw new RuntimeException($e->getMessage());
         }
 
-        if (isset($this->xml_data['code'])) {
-            $this->rc = $this->code = $this->xml_data['code'];
-        } else {
-            $this->rc = $this->code = 1000;
-        }
+        $this->version = $svcMenu['version'];
+        $this->language = 'en';
 
-        if (isset($this->xml_data['msg'])) {
-            $this->msg = $this->xml_data['msg'];
-        } else {
-            $this->msg = "";
-        }
+        try {
+            $login = $this->send([
+                'command' => 'epp:login',
+                'clID' => $this->tool->getLogin(),
+                'pw' => $this->tool->getPassword(),
+                'version' => $this->version,
+                'language' => $this->language,
+                'objURI' => $this->objRepo->getAll(),
+                'extURI' => $this->extRepo->getAll(),
+            ]);
 
-        if ($this->debug >= DEBUG_TRACE) {
-            $this->slog("::: got: ". $this->code .": ". $this->msg);
-        }
-
-        return $this->xml_data;
-    }
-
-    public function login()
-    {
-        if ($this->isLoggedIn()) {
-            return $this;
-        }
-
-        if (!$this->isConnected()) {
-            $this->connect();
-        }
-
-        $res = $this->command('epp', 'login', array_merge([
-                'clID' => $this->config['login'],
-                'pw' => $this->config['password'],
-            ],
-            $this->greeting ? $this->greeting['greeting'] : $this->hello()
-        ));
-
-        if ($this->code != 1000) {
-            $this->disconnect();
-            throw new \RuntimeException($this->msg);
-        }
-
-        $this->is_loggedin = true;
-        return $this;
-    }
-
-    public function hello()
-    {
-        $cache = $this->tool->di->get('cache');
-        return $cache->getOrSet([__METHOD__, $this->config], function() {
-            $res = $this->command('epp', 'hello', []);
-            return $res['epp']['greeting'];
-        }, 600);
-    }
-
-    public function logout()
-    {
-        $this->command('epp', 'logout', []);
-        $this->is_loggedin = false;
-        return $this;
-    }
-
-    /**
-     * Get ansfer from EPP server
-     *
-     * @return bool
-     */
-    protected function getFrame()
-    {
-        if (feof($this->socket)) {
-            return false;
-        }
-
-        $hdr = stream_get_contents($this->socket, 4);
-        if (empty($hdr)) {
-            return false;
-        }
-
-        $unpacked = unpack('N', $hdr);
-        $this->answer = stream_get_contents($this->socket, ($unpacked[1] - 4));
-        return true;
-    }
-
-    /**
-     * Send sommand to EPP server
-     *
-     * @return bool
-     */
-    protected function sendFrame()
-    {
-        return @fwrite($this->socket, pack('N', (strlen($this->request)+4)).$this->request);
-    }
-
-    public function __destruct () {
-        $this->disconnect();
-    }
-
-    protected function slog($str, $mode = self::MODE_INFO)
-    {
-        if (!$this->log_file) {
-            return ;
-        }
-
-        if (!file_exists($this->log_file)) {
-            if (!file_exists(dirname($this->log_file))) {
-                if (!mkdir(dirname($this->log_file), 0777, true)) {
-                    return ;
-                }
+            if ($login['code'] == 1000) {
+                $this->isLoggedIn = true;
             }
-        }
 
-        switch ($mode) {
-            case self::MODE_SERVER:
-                $mode = "S";
-                break;
-            case self::MODE_CLIENT:
-                $mode = "C";
-                break;
-            default:
-                $mode = "I";
-        }
-
-        if (is_string($str)) {
-            $str = explode("\n", $str);
-        }
-
-        if (!is_array($str)) {
-            return ;
-        }
-
-        foreach($str as $tmp) {
-            $dt = date("Y-m-d H:i:s");
-            $tmp = sprintf("%s [%5s] %s: %s\n", $dt, posix_getpid(), $mode, $tmp);
-            file_put_contents($this->log_file, $tmp, FILE_APPEND);
+            if ($this->extRepo->get('balance')) {
+                $this->objRepo->add('balance', $this->extRepo->get('balance'));
+                $this->extRepo->delete('balance');
+            }
+        } catch (\Throwable $e) {
+            throw new RuntimeException($e->getMessage());
         }
     }
 
-    public function getRequestObj(string $name) : AbstractRequest
+    public function command(array $data)
     {
-        if (empty($this->requestMap[$name])) {
-            throw new \InvalidCallException("Object `$name` not found");
-        }
-
-        return $this->createRequestObj($this->requestMap[$name]);
+        return $this->send($data);
     }
 
-    public function setRequestObj(string $name, AbstractRequest $request) : self
+    public function getGreeting()
     {
-        if (empty($this->requestMap[$name])) {
-            throw new InvalidCallException("Object `$name` not found");
+        return $this->greeting;
+    }
+
+    public function send(array $data)
+    {
+        if (!$this->connection->isConnected()) {
+            throw new RuntimeException('Cannot send request to the not open connection');
         }
 
-        $this->requestMap[$name] = $request;
+        [$object, $command] = explode(":", $data['command'], 2);
+        unset($data['command']);
+
+        $request = $this->objRepo->getRequest($object);
+        $request = call_user_func([$request, $command], $data);
+
+        $request = $this->applyExtensions($request, $data);
+        $requestXML = (string) $request;
+
+        $this->connection->sendFrame($requestXML);
+        $responseXML = $this->connection->getFrame();
+
+        return ParserFactory::parse($object, $responseXML);
+    }
+
+    protected function applyExtensions($request, $data)
+    {
+        if (empty($data['extensions'])) {
+            return $request;
+        }
+
+        foreach ($data['extensions'] as $extension => $values) {
+            $ext = $this->extRepo->getRequest($extension);
+            if ($ext === null) {
+                continue;
+            }
+
+            $request = call_user_func([$ext->setRequest($request), $values['command'] ?? 'default'], $values);
+        }
+
+        return $request;
+    }
+
+    /**
+     * Getting the URI collection of objects.
+     *
+     * @return NamespaceCollection
+     */
+    public function getNamespaceCollection()
+    {
+        return $this->namespaceCollection;
+    }
+
+    /**
+     * Setting the URI collection of objects.
+     *
+     * @param NamespaceCollection $collection Collection object
+     */
+    public function setNamespaceCollection(NamespaceCollection $collection)
+    {
+        $this->namespaceCollection = $collection;
 
         return $this;
     }
 
-    public function createRequestObj($class) : AbstractRequest
+    /**
+     * Getting the URI collection of extensions.
+     *
+     * @return NamespaceCollection
+     */
+    public function getExtNamespaceCollection()
     {
-        if (is_object($class)) {
-            return $class;
+        return $this->extNamespaceCollection;
+    }
+
+    /**
+     * Setting the URI collection of extensions.
+     *
+     * @param NamespaceCollection $collection Collection object
+     */
+    public function setExtNamespaceCollection(NamespaceCollection $collection)
+    {
+        $this->extNamespaceCollection = $collection;
+
+        return $this;
+    }
+
+    /**
+     * Getting the identifier generator.
+     *
+     * @return GeneratorInterface
+     */
+    public function getIdGenerator()
+    {
+        return $this->idGenerator;
+    }
+
+    /**
+     * Setting the identifier generator.
+     *
+     * @param GeneratorInterface $idGenerator Generator object
+     */
+    public function setIdGenerator(GeneratorInterface $idGenerator)
+    {
+        $this->idGenerator = $idGenerator;
+
+        return $this;
+    }
+
+    /**
+     * Add extension in stack.
+     *
+     * @param ExtensionInterface $extension instance of extension
+     *
+     * @return self
+     */
+    public function pushExtension(ExtensionInterface $extension)
+    {
+        array_unshift($this->extensionStack, $extension);
+        $extension->setupNamespaces($this);
+
+        return $this;
+    }
+
+    /**
+     * Retrieving extension from the stack.
+     *
+     * @return ExtensionInterface
+     *
+     * @throws LogicException
+     */
+    public function popExtension()
+    {
+        if (!$this->extensionStack) {
+            throw new LogicException('You tried to pop from an empty extension stack.');
         }
 
-        return new $class($this->config['namespaces'], $this->config['login']);
+        return array_shift($this->extensionStack);
     }
 }
 

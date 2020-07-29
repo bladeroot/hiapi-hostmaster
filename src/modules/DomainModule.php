@@ -40,6 +40,7 @@ class DomainModule extends AbstractModule
 
     public function domainCheck(array $row) : array
     {
+        $this->domainRestore($row);
         try {
             $res = $this->command('check', $row);
         } catch (Exception $e) {
@@ -56,7 +57,46 @@ class DomainModule extends AbstractModule
             ];
         }
 
+        /***
+        if ((int) $res['domain'][$row['domain']['avail'] === 0) {
+            return $res['domain'][$row['domain']];
+        }***/
+
+        $extensions = $this->tool->getEppClient()->getExtensions();
+
+        if (!empty($extensions['fee']) || !empty($extensions['price'])) {
+        }
+
         return $res['domain'][$row['domain']];
+    }
+
+    protected function domainCheckPrice($row, $res)
+    {
+        $this->command('check', array_merge($row, [
+            'extensions' => [
+                'price' => [
+                    'command' => 'check',
+                    'period' => 1,
+                    'unit' => 'y',
+                ],
+            ],
+        ]));
+    }
+
+    protected function domainCheckFee($row, $res)
+    {
+        $this->command('check', array_merge($row, [
+            'extensions' => [
+                'fee' => [
+                    'command' => 'check',
+                    'domain' => $row['domain'],
+                    'currency' => $this->tool->getCurrency(),
+                    'action' => $row['action'] ?? 'create',
+                    'period' => 1,
+                    'unit' => 'y',
+                ],
+            ],
+        ]));
     }
 
     public function domainsInfo(array $rows) : array
@@ -151,6 +191,7 @@ class DomainModule extends AbstractModule
             'domain' => $row['domain'],
             'extensions' => [
                 'rgp' => [
+                    'command' => 'request',
                     'op' => 'request',
                 ],
             ],
@@ -367,10 +408,7 @@ class DomainModule extends AbstractModule
             ]);
 
             if ($this->tool->contactCheck($contact)) {
-                var_dump($this->tool->contactCheck($contact));
-                var_dump("123");
             } else {
-                var_dump("234");
             }
         }
         die();

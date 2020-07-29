@@ -11,21 +11,22 @@
 
 namespace hiapi\hostmaster\requests;
 
-class EppRequest extends AbstractRequest
+class EppRequest extends AbstractObjectRequest
 {
+    protected $object = 'epp';
+
     /** @var string $language */
     protected $language = 'en';
 
     public function hello(array $row = []) : self
     {
-        $this->init();
         $this->appendElement($this->epp, 'hello');
         return $this;
     }
 
     public function login(array $row = []) : self
     {
-        $this->init()->command('login');
+        $this->command('login');
         foreach (['clID', 'pw', 'newPW'] as $key) {
             if (!empty($row[$key])) {
                 $this->appendElement($this->command, $key, $row[$key]);
@@ -34,22 +35,22 @@ class EppRequest extends AbstractRequest
 
         $options = $this->appendElement($this->command, 'options');
         foreach (['version','lang'] as $key) {
-            $row['svcMenu'][$key] = $key === 'lang' ? 'en' : $row['svcMenu'][$key];
-            $this->appendElement($options, $key, $row['svcMenu'][$key]);
+            $row[$key] = $key === 'lang' ? 'en' : $row[$key];
+            $this->appendElement($options, $key, $row[$key]);
         }
 
         $svcs = $this->appendElement($this->command, 'svcs');
-        foreach ($row['svcMenu']['objURI'] as $objURI) {
+        foreach ($row['objURI'] as $objURI) {
             $this->appendElement($svcs, 'objURI', $objURI);
         }
 
-        if (empty($row['svcMenu']['svcExtension'])) {
+        if (empty($row['extURI'])) {
             return $this;
         }
 
         $svcExtension = $this->appendElement($svcs, 'svcExtension');
 
-        foreach ($row['svcMenu']['svcExtension']['extURI'] as $extURI) {
+        foreach ($row['extURI'] as $extURI) {
             $this->appendElement($svcExtension, 'extURI', $extURI);
         }
 
@@ -58,7 +59,7 @@ class EppRequest extends AbstractRequest
 
     public function logout(array $row = []) : self
     {
-        return $this->init()->command('logout');
+        return $this->command('logout');
     }
 
     public function poll(array $row = []) : self
@@ -68,7 +69,7 @@ class EppRequest extends AbstractRequest
             'msgID' => $row['op'] === 'ack' && $row['msgID'] ? $row['msgID'] : null,
         ]);
 
-        return $this->init()->command('poll', $data);
+        return $this->command('poll', $data);
     }
 
     public function balance(array $row = []) : self

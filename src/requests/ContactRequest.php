@@ -11,7 +11,7 @@
 
 namespace hiapi\hostmaster\requests;
 
-class ContactRequest extends AbstractRequest
+class ContactRequest extends AbstractObjectRequest
 {
     /** @var string $object */
     protected $object = 'contact';

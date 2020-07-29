@@ -23,8 +23,19 @@ class EppModule extends AbstractModule
     /** @var string */
     protected $object = 'epp';
 
-    protected function balance($poll = [])
+    protected function balance($polls = [])
     {
+        $contract = $this->tool->getContract();
+        if (empty($contract)) {
+            return $polls;
+        }
+
+        $res = $this->command('balance', [
+            'contract' => $this->tool->getContract(),
+        ]);
+
+        return $polls;
+        var_dump($this->command('balance', []));
         if (isset($this->contract) && in_array('balance', $this->extensions, true)) {
             $rc = $this->operation->balance(['contract' => $this->contract]);
             if (!$rc) {
@@ -64,7 +75,7 @@ class EppModule extends AbstractModule
         return $poll ? : true;
     }
 
-    public function pollsGetNew ($jrow)
+    public function pollsGetNew ($jrow = [])
     {
         $polls = [];
         $rc = $this->pollReq();
@@ -74,8 +85,6 @@ class EppModule extends AbstractModule
             $polls[$poll['id']] = $poll;
             $rc = $this->pollReq();
         }
-
-        return empty($polls) ? true : $polls;
 
         $poll = $this->balance($poll);
         return $poll ? : true;

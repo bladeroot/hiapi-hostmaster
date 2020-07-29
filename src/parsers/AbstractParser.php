@@ -38,6 +38,8 @@ class AbstractParser
         'acDate',
         'registrant',
         'trStatus',
+        'contract',
+        'contractUntil',
     ];
 
     /** @var array */

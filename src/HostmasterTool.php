@@ -40,6 +40,7 @@ class HostmasterTool extends \hiapi\components\AbstractTool
         'protocol'      => 'tls',
         'port'          => 700,
         'language'      => 'en',
+        'registry'      => 'hostmaster',
         'services'      => ['domain', 'host', 'contact'],
         'extensions'    => ['rgp', 'uaepp', 'balance', 'secDNS'],
         'disabled'      => [
@@ -88,12 +89,16 @@ class HostmasterTool extends \hiapi\components\AbstractTool
     protected $password;
     /* @var string $new_password */
     protected $new_password;
+    /** @var string $contract */
+    protected $contract;
     /* @var string $certificate */
     protected $cerificate;
     /* @var string $cacertificate */
     protected $cacerificate;
-    /* @var object eppClient */
+    /* @var EppClient eppClient */
     protected $eppClient = null;
+    /** @var StreamSocketConnection $connection */
+    protected $connection;
     /* @var array $modules */
     protected $modules = [
         'domain'    => DomainModule::class,
@@ -186,7 +191,7 @@ class HostmasterTool extends \hiapi\components\AbstractTool
         }
 
         try {
-            return call_user_func_array([$this->getEppClient(), 'command'], [$class, $command, $data]);
+            return call_user_func_array([$this->getEppClient(), 'command'], [array_merge(['command' => "{$class}:{$command}"], $data)]);
         } catch (\Throwable $e) {
             echo $e->getMessage();
             $this->deleteEppClient();
@@ -202,29 +207,15 @@ class HostmasterTool extends \hiapi\components\AbstractTool
      */
     public function getEppClient(): EppClient
     {
-        if ($this->eppClient === null) {
-            try {
-                $this->eppClient = EppClient::init($this, $this->getConfig());
-            } catch (\Throwable $e) {
-                throw new Exception($e->getMessage());
-            }
+        $connection = $this->getConnection();
+        if (!($connection instanceof StreamSocketConnection)) {
+            throw new RuntimeException('Could not create connection');
         }
 
-        try {
-            if (!$this->eppClient->isConnected()) {
-                $count = $this->config['threads'];
-                while ($count >= $this->config['threads']) {
-                    $fi = new FilesystemIterator($this->config['piddir'], FilesystemIterator::SKIP_DOTS);
-                    $count = iterator_count($fi);
-                }
-
-                $this->eppClient->connect()->login();
-            }
-        } catch (\Throwable $e) {
-            throw new Exception($e->getMessage());
+        if (!($this->eppClient instanceof EppClient)) {
+            $this->eppClient = EppClient::getClient($this, $connection);
         }
 
-        file_put_contents($this->config['pidfile'], $this->config['pidfile']);
         return $this->eppClient;
     }
 
@@ -239,6 +230,34 @@ class HostmasterTool extends \hiapi\components\AbstractTool
         unlink($this->config['pidfile']);
         $this->eppClient = $eppClient;
         return $this;
+    }
+
+    /**
+     * Get StreamSocketConnection
+     *
+     * @param void
+     * @return StreamSocketConnection
+     * @threw RuntimeException
+     */
+    public function getConnection() : StreamSocketConnection
+    {
+        if ($this->connection instanceof StreamSocketConnection) {
+            return $this->connection;
+        }
+
+        $fi = new FilesystemIterator($this->config['piddir'], FilesystemIterator::SKIP_DOTS);
+        $count = iterator_count($fi);
+
+        while ($count >= $this->config['threads']) {
+            $fi = new FilesystemIterator($this->config['piddir'], FilesystemIterator::SKIP_DOTS);
+            $count = iterator_count($fi);
+        }
+
+        $this->connection = StreamSocketConnection::init($this->getConfig());
+
+        file_put_contents($this->config['pidfile'], $this->config['pidfile']);
+
+        return $this->connection;
     }
 
     /**
@@ -268,13 +287,13 @@ class HostmasterTool extends \hiapi\components\AbstractTool
             $this->config[$key] = $config[$key];
         }
 
-        foreach (['protocol', 'url', 'port', 'registry', 'services', 'extensions', 'namespaces', 'cacertificate', 'certificate', 'new_password', 'language', 'piddir', 'registrator'] as $key) {
+        foreach (['protocol', 'url', 'port', 'registry', 'services', 'extensions', 'namespaces', 'cacertificate', 'certificate', 'new_password', 'language', 'piddir', 'registrar', 'contract'] as $key) {
             if (!empty($config[$key])) {
                 $this->config[$key] = $config[$key];
             }
         }
 
-        $this->config['piddir'] = $this->config['piddir'] ?? dirname(__DIR__) . "/pid/{$this->config['registry']}_{$this->config['registrator']}";
+        $this->config['piddir'] = $this->config['piddir'] ?? dirname(__DIR__) . "/pid/{$this->config['registry']}_{$this->config['registrar']}";
         if (!file_exists($this->config['piddir'])) {
             mkdir($this->config['piddir'], 0777, true);
         }
@@ -304,18 +323,23 @@ class HostmasterTool extends \hiapi\components\AbstractTool
         return $available ?? [];
     }
 
-    public function __destruct()
+    public function getLogin()
     {
-        $this->deleteEppClient();
+        return $this->login;
     }
 
-    protected function deleteEppClient()
+    public function getPassword()
     {
-        if (is_object($this->eppClient)) {
-            $this->eppClient->disconnect();
-        }
+        return $this->password;
+    }
 
-        $this->eppClient = null;
+    public function getContract()
+    {
+        return $this->config['contract'];
+    }
+
+    public function __destruct()
+    {
         unlink($this->config['pidfile']);
     }
 }

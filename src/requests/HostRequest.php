@@ -11,7 +11,7 @@
 
 namespace hiapi\hostmaster\requests;
 
-class HostRequest extends AbstractRequest
+class HostRequest extends AbstractObjectRequest
 {
     /** @var string $object */
     protected $object = 'host';
