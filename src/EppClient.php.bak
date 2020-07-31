@@ -1,0 +1,280 @@
+<?php
+/**
+ * hiAPI Hostmaster plugin
+ *
+ * @link      https://github.com/hiqdev/hiapi-hostmaster
+ * @package   hiapi-hostmaster
+ * @license   BSD-3-Clause
+ * @author: omnix@debian.org.ua
+ * @author: bladeroot@gmail.com
+ * @copyright Copyright (c) 2020, HiQDev (http://hiqdev.com/)
+ */
+
+namespace hiapi\hostmaster;
+
+use hiapi\hostmaster\requests\RequestInterface;
+use hiapi\hostmaster\generator\BasicGenerator;
+use hiapi\hostmaster\response\epp\EppHelloResponse;
+use hiapi\hostmaster\exceptions\ConnectionException;
+
+use RuntimeException;
+
+/*
+ * EPP Client
+ */
+class EppClient
+{
+    protected $objects = [
+        'epp' => [
+            'urn:ietf:params:xml:ns:epp-1.0' => EppRequest::class,
+        ],
+        'domain' => [
+            'urn:ietf:params:xml:ns:domain-1.0' => DomainRequest::class,
+            'http://hostmaster.ua/epp/domain-1.1' => DomainRequest::class,
+        ],
+        'host' => [
+            'urn:ietf:params:xml:ns:host-1.0' => HostRequest::class,
+            'http://hostmaster.ua/epp/host-1.1' => HostRequest::class,
+        ],
+        'contact' => [
+            'urn:ietf:params:xml:ns:contact-1.0' => ContactRequest::class,
+            'http://hostmaster.ua/epp/contact-1.1' => ContactRequest::class,
+        ],
+        'balance' => [
+            'http://hostmaster.ua/epp/balance-1.0' => BalanceRequest::class,
+        ],
+    ];
+
+    protected $extensions = [
+        'secDNS' => [
+            'urn:ietf:params:xml:ns:secDNS-1.1' => SecDNSExtensionRequest::class,
+            'http://hostmaster.ua/epp/secDNS-1.1' => SecDNSExtensionRequest::class,
+        ],
+        'rgp' => [
+            'urn:ietf:params:xml:ns:rgp-1.0' => RGPExtensionRequest::class,
+            'http://hostmaster.ua/epp/rgp-1.1' RGPExtensionRequest::class,
+        ],
+        'fee' => [
+            'urn:ietf:params:xml:ns:fee-0.5' => FeeExtensionRequest::class,
+            'urn:ietf:params:xml:ns:fee-0.6' => FeeExtensionRequest::class,
+            'urn:ietf:params:xml:ns:fee-0.7' => FeeExtensionRequest::class,
+            'urn:ietf:params:xml:ns:fee-0.8' => FeeExtensionRequest::class,
+            'urn:ietf:params:xml:ns:fee-0.9' => Fee9ExtensionRequest::class,
+            'urn:ietf:params:xml:ns:fee-0.11' => Fee11ExtensionRequest::class,
+            'urn:ietf:params:xml:ns:fee-0.21' => FeeExtensionRequest::class,
+        ],
+        'price' => [
+            'urn:ar:params:xml:ns:price-1.0' => PriceExtensionRequest::class,
+            'urn:ar:params:xml:ns:price-1.1' => PriceExtensionRequest::class,
+            'urn:ar:params:xml:ns:price-1.2' => PriceExtensionRequest::class,
+        ],
+        'uaepp' => [
+            'http://hostmaster.ua/epp/uaepp-1.1' => UAEppExtensionRequest::class,
+        ],
+        'balance' => [
+            'http://hostmaster.ua/epp/balance-1.0' => BalanceExtensionRequest::class,
+        ],
+        'oxrs' => [
+            'urn:afilias:params:xml:ns:oxrs-1.1' => OXRSExtensionRequest::class,
+        ],
+        'namestoreExt' => [
+            'http://www.verisign-grs.com/epp/namestoreExt-1.1' => NamestoreExtensionRequest::class,
+        ],
+        'idn' => [
+            'urn:afilias:params:xml:ns:idn-1.0' => IDNExtensionRequest::class,
+        ],
+        'idnLang' => [
+            'http://www.verisign.com/epp/idnLang-1.0' => IDNLangExtensionRequest::class,
+        ],
+    ];
+    /** @var HostmasterTool */
+    private $tool;
+
+    /** @var StreamSocketConnection */
+    private $connection;
+
+    /** @var NamespaceCollection */
+    private $namespaceCollection;
+
+    /** @var NamespaceCollection */
+    private $extNamespaceCollection;
+
+    /** @var GeneratorInterface */
+    private $idGenerator;
+
+    /** @var ExtensionInterface[] */
+    private $extensionStack;
+
+    private $greeting;
+
+    private static $instance;
+
+    public static getClient(HostmasterTool $tool, StreamSocketConnection $connection) : self
+    {
+        if (empty(self::$instance)) {
+            self::$instance = new static($tool, $connection);
+        }
+
+        return self::$instance;
+    }
+
+    private function __construct(HostmasterTool $tool, StreamSocketConnection $connection)
+    {
+        $this->tool = $tool;
+        $this->connection = $connection;
+        $this->greeting = $this->connection->getGreeting();
+    }
+
+    /**
+     * Opening the connection to the EPP server.
+     *
+     * @return GreetingResponse
+     * @throws ConnectionException
+     */
+    public function login() : self
+    {
+        if ($this->connection->isConnected()) {
+            throw new RuntimeException('Already connected');
+        }
+
+        $this->connection->connect();
+
+        $xml = $this->connection->getGreeting();
+
+        $this->greeting = new EppHelloResponse($xml);
+
+        if (!$this->greeting->isSuccess()) {
+            throw new ConnectionException('Invalid greeting on connection to the EPP server.');
+        }
+
+        return $this;
+    }
+
+    public function getGreeting()
+    {
+        return $this->greeting;
+    }
+
+    public function send(RequestInterface $request)
+    {
+        if (!$this->connection->isConnected()) {
+            throw new RuntimeException('Cannot send request to the not open connection');
+        }
+
+
+        $requestXML = $request->saveXML();
+        $this->connection->sendFrame($requestXML);
+        $responseXML = $this->connection->getFrame();
+
+        try {
+            $responseClass = $request->getResponseClass();
+            $response = new $responseClass($responseXML);
+
+            foreach ($this->extensionStack as $extension) {
+                $extension->handleResponse($response);
+            }
+        } catch (\Throwable $e) {
+            var_dump($e->getMessage());
+        }
+
+        return $response->getAsArray();
+    }
+
+    /**
+     * Getting the URI collection of objects.
+     *
+     * @return NamespaceCollection
+     */
+    public function getNamespaceCollection()
+    {
+        return $this->namespaceCollection;
+    }
+
+    /**
+     * Setting the URI collection of objects.
+     *
+     * @param NamespaceCollection $collection Collection object
+     */
+    public function setNamespaceCollection(NamespaceCollection $collection)
+    {
+        $this->namespaceCollection = $collection;
+
+        return $this;
+    }
+
+    /**
+     * Getting the URI collection of extensions.
+     *
+     * @return NamespaceCollection
+     */
+    public function getExtNamespaceCollection()
+    {
+        return $this->extNamespaceCollection;
+    }
+
+    /**
+     * Setting the URI collection of extensions.
+     *
+     * @param NamespaceCollection $collection Collection object
+     */
+    public function setExtNamespaceCollection(NamespaceCollection $collection)
+    {
+        $this->extNamespaceCollection = $collection;
+
+        return $this;
+    }
+
+    /**
+     * Getting the identifier generator.
+     *
+     * @return GeneratorInterface
+     */
+    public function getIdGenerator()
+    {
+        return $this->idGenerator;
+    }
+
+    /**
+     * Setting the identifier generator.
+     *
+     * @param GeneratorInterface $idGenerator Generator object
+     */
+    public function setIdGenerator(GeneratorInterface $idGenerator)
+    {
+        $this->idGenerator = $idGenerator;
+
+        return $this;
+    }
+
+    /**
+     * Add extension in stack.
+     *
+     * @param ExtensionInterface $extension instance of extension
+     *
+     * @return self
+     */
+    public function pushExtension(ExtensionInterface $extension)
+    {
+        array_unshift($this->extensionStack, $extension);
+        $extension->setupNamespaces($this);
+
+        return $this;
+    }
+
+    /**
+     * Retrieving extension from the stack.
+     *
+     * @return ExtensionInterface
+     *
+     * @throws LogicException
+     */
+    public function popExtension()
+    {
+        if (!$this->extensionStack) {
+            throw new LogicException('You tried to pop from an empty extension stack.');
+        }
+
+        return array_shift($this->extensionStack);
+    }
+}
+
